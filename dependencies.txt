@@ -2,3 +2,4 @@ polars
 warnings
 dotenv
 typesafe-sdk
+sklearn

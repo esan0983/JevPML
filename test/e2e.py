@@ -3,6 +3,7 @@ import pytest
 import numpy as np
 
 from scripts.state_creation import create_state
+from scripts.model_selection import select_model
 
 @pytest.fixture
 def mock_dataset():
@@ -33,12 +34,16 @@ def mock_dict():
 
     return df_dict
 
-def test_create_state(mock_dataset, mock_dict):
+def test_pipeline(mock_dataset, mock_dict):
     state = create_state(mock_dataset, mock_dict)
 
     assert state is not None, "The state dictionary was not created (returned None)."
     assert isinstance(state, dict), f"Expected a dictionary, but got {type(state)}."
 
-    print(state)
-
     print("\nGenerated State Dictionary:", state)
+
+    models = select_model(state)
+
+    assert isinstance(models, dict), f"Expected a dictionary, but got {type(state)}."
+    
+    print("\nGenerated Model Noul Dictionary:", models)
