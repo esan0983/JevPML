@@ -7,6 +7,7 @@ def role(col_name: str, data_type: str, num_unique: int) -> str:
         "column name": col_name,
         "data type": data_type,
         "no. of unique values": num_unique
+        # Might be useful to also include the number of total rows so the AI can compare number of unique values with the df height?
     }
 
     question = {

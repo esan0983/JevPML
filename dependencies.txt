@@ -3,3 +3,4 @@ warnings
 dotenv
 typesafe-sdk
 sklearn
+scipy

@@ -153,7 +153,6 @@ def impute_column(state: dict) -> str:
                 "question": "What is the best way to deal with null values in the column of interest?",
             },
             "criteria": {
-                "Drop": "Drop rows with null value",
                 "Mean Imputation": "Impute by mean value",
                 "Median Imputation": "Impute by median value",
                 "Constant Imputation": "Impute by a constant, usually zero",
