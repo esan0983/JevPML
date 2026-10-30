@@ -1,10 +1,13 @@
 # This assumes that the dataset has gone through "column usefulness" tests and thus all the useless columns are dropped.
 
 import polars as pl
+import optuna
 
 from sklearn.preprocessing import (
     OneHotEncoder,
-    OrdinalEncoder
+    OrdinalEncoder,
+    StandardScaler,
+    RobustScaler
 )
 
 from sklearn.model_selection import (
@@ -27,6 +30,14 @@ from sklearn.feature_selection import (
 
 from scipy.stats import (
     skew
+)
+
+from sklearn.linear_model import (
+    LogisticRegression
+)
+
+from sklearn.metrics import (
+    log_loss
 )
 
 from jev_questions.ml_algorithms.logistic_questions import (
@@ -109,101 +120,143 @@ def logistic_regression(df: pl.DataFrame, target: str, state: dict) -> None:
         stratify=y
     )
 
-    # Perform stratified K-fold cross validation
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    def objective(trial):
+        params = {
+            'C': trial.suggest_float('C', 1e-4, 1e4, log=True),
+            'penalty': trial.suggest_categorical('penalty', ['l1', 'l2']),
+            'solver': 'saga',  # 'saga' supports both l1 and l2 penalties
+            'max_iter': 2000,
+            'random_state': 42
+        }
 
-    for fold, (train_idx, val_idx) in enumerate(skf.split(X_pretrain)):
-        X_train, X_val = X_pretrain[train_idx], X_pretrain[val_idx]
-        y_train, y_val = y_pretrain[train_idx], y_pretrain[val_idx]
+        # Perform stratified K-fold cross validation
+        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        fold_losses = []
 
-        num_missing_rows = X_train.filter(pl.any_horizontal(pl.all().is_null())).len()
-        total_rows = X_train.height
+        for fold, (train_idx, val_idx) in enumerate(skf.split(X_pretrain)):
+            X_train, X_val = X_pretrain[train_idx], X_pretrain[val_idx]
+            y_train, y_val = y_pretrain[train_idx], y_pretrain[val_idx]
 
-        # Imputation
-        if num_missing_rows / total_rows > 0.25:
-            # Multiple Imputation
-            imputer = IterativeImputer(
-                sample_posterior=False,
-                max_iter=10,
-                random_state=42
-            )
+            num_missing_rows = X_train.filter(pl.any_horizontal(pl.all().is_null())).len()
+            total_rows = X_train.height
 
-            X_train = imputer.fit_transform(X_train)
-            X_val = imputer.transform(X_val)
-        else:
-            # Column-by-column imputation
             columns = X_train.columns
+
+            # Imputation
+            if num_missing_rows / total_rows > 0.25:
+                # Multiple Imputation
+                imputer = IterativeImputer(
+                    sample_posterior=False,
+                    max_iter=10,
+                    random_state=42
+                )
+
+                X_train = imputer.fit_transform(X_train)
+                X_val = imputer.transform(X_val)
+            else:
+                # Column-by-column imputation
+                for column in columns:
+                    column_data = state.get("columns", {}).get(column, {})
+                    assert len(column_data) > 0
+
+                    imputation_method = "Drop"
+
+                    # No need for Jev for automatically choosing a simple imputation method.
+                    if column_data.get("role", "") in ["categorical ordinal", "categorical non-ordinal"]:
+                        imputation_method = "Mode"
+                    else:
+                        is_missing = X_train[column].is_null().cast(pl.Int8)
+                        X_missing_matrix = is_missing.to_numpy().reshape(-1, 1)
+                        mi_score = mutual_info_classif(X_missing_matrix, y_train.to_numpy(), random_state=42)[0]
+
+                        q25 = pl.col(column).quantile(0.25)
+                        q75 = pl.col(column).quantile(0.75)
+                        iqr = q75 - q25
+
+                        lower_bound = q25 - 1.5 * iqr
+                        upper_bound = q75 + 1.5 * iqr
+
+                        # 2. Filter and count on your X_train DataFrame
+                        outlier_count = X_train.filter(
+                            (pl.col(column) < lower_bound) | (pl.col(column) > upper_bound)
+                        ).len()
+
+                        if mi_score > 0.01:
+                            imputation_method = "Constant"
+                        elif abs(skew(X_train[column], bias=True)) > 1 or outlier_count / total_rows > 0.01:
+                            imputation_method = "Median"
+                        else:
+                            imputation_method = "Mean"
+                            
+                    match imputation_method:
+                        case "Drop":
+                            null_list_train = X_train.select(pl.col(column).is_null().arg_true()).item().to_list()
+                            null_list_val = X_val.select(pl.col(column).is_null().arg_true()).item().to_list()
+
+                            X_train = X_train.filter(
+                                ~pl.arange(0, pl.count()).is_in(null_list_train)
+                            )
+
+                            y_train = y_train.filter(
+                                ~pl.arange(0, pl.count()).is_in(null_list_train)
+                            )
+
+                            X_val = X_val.filter(
+                                ~pl.arange(0, pl.count()).is_in(null_list_val)
+                            )
+
+                            y_val = y_val.filter(
+                                ~pl.arange(0, pl.count()).is_in(null_list_val)
+                            )
+                        case "Mean":
+                            imputer = SimpleImputer(strategy='mean')
+                            X_train[column] = imputer.fit_transform(X_train[column])
+                            X_val[column] = imputer.transform(X_val[column])
+                        case "Median":
+                            imputer = SimpleImputer(strategy='median')
+                            X_train[column] = imputer.fit_transform(X_train[column])
+                            X_val[column] = imputer.transform(X_val[column])
+                        case "Mode":
+                            imputer = SimpleImputer(strategy='most_frequent')
+                            X_train[column] = imputer.fit_transform(X_train[column])
+                            X_val[column] = imputer.transform(X_val[column])
+                        case "Constant":
+                            imputer = SimpleImputer(strategy='constant', fill_value=0)
+                            X_train[column] = imputer.fit_transform(X_train[column])
+                            X_val[column] = imputer.transform(X_val[column])
+
+            # Scaling
             for column in columns:
                 column_data = state.get("columns", {}).get(column, {})
                 assert len(column_data) > 0
 
-                imputation_method = "Drop"
-
-                # No need for Jev for automatically choosing a simple imputation method.
-                if column_data.get("role", "") in ["categorical ordinal", "categorical non-ordinal"]:
-                    imputation_method = "Mode"
-                else:
-                    is_missing = X_train[column].is_null().cast(pl.Int8)
-                    X_missing_matrix = is_missing.to_numpy().reshape(-1, 1)
-                    mi_score = mutual_info_classif(X_missing_matrix, y_train.to_numpy(), random_state=42)[0]
-
-                    q25 = pl.col(column).quantile(0.25)
-                    q75 = pl.col(column).quantile(0.75)
-                    iqr = q75 - q25
-
+                if column_data.get("role", "") == "numerical":
                     lower_bound = q25 - 1.5 * iqr
                     upper_bound = q75 + 1.5 * iqr
 
-                    # 2. Filter and count on your X_train DataFrame
                     outlier_count = X_train.filter(
                         (pl.col(column) < lower_bound) | (pl.col(column) > upper_bound)
                     ).len()
 
-                    if mi_score > 0.01:
-                        imputation_method = "Constant"
-                    elif abs(skew(X_train[column], bias=True)) > 1 or outlier_count / total_rows > 0.01:
-                        imputation_method = "Median"
+                    if outlier_count / total_rows > 0.05:
+                        scaler = RobustScaler(unit_variance=True)
                     else:
-                        imputation_method = "Mean"
-                        
-                match imputation_method:
-                    case "Drop":
-                        null_list_train = X_train.select(pl.col(column).is_null().arg_true()).item().to_list()
-                        null_list_val = X_val.select(pl.col(column).is_null().arg_true()).item().to_list()
+                        scaler = StandardScaler()
 
-                        X_train = X_train.filter(
-                            ~pl.arange(0, pl.count()).is_in(null_list_train)
-                        )
+                    X_train[column] = scaler.fit_transform(X_train[column])
+                    X_val[column] = scaler.transform(X_val[column])
 
-                        y_train = y_train.filter(
-                            ~pl.arange(0, pl.count()).is_in(null_list_train)
-                        )
+        model = LogisticRegression(**params)
+        model.fit(X_train, y_train)
 
-                        X_val = X_val.filter(
-                            ~pl.arange(0, pl.count()).is_in(null_list_val)
-                        )
+        y_pred_proba = model.predict_proba(X_val)
+        loss = log_loss(y_val, y_pred_proba)
+        fold_losses.append(loss)
 
-                        y_val = y_val.filter(
-                            ~pl.arange(0, pl.count()).is_in(null_list_val)
-                        )
-                    case "Mean":
-                        imputer = SimpleImputer(strategy='mean')
-                        X_train[column] = imputer.fit_transform(X_train[column])
-                        X_val[column] = imputer.transform(X_val[column])
-                    case "Median":
-                        imputer = SimpleImputer(strategy='median')
-                        X_train[column] = imputer.fit_transform(X_train[column])
-                        X_val[column] = imputer.transform(X_val[column])
-                    case "Mode":
-                        imputer = SimpleImputer(strategy='most_frequent')
-                        X_train[column] = imputer.fit_transform(X_train[column])
-                        X_val[column] = imputer.transform(X_val[column])
-                    case "Constant":
-                        imputer = SimpleImputer(strategy='constant', fill_value=0)
-                        X_train[column] = imputer.fit_transform(X_train[column])
-                        X_val[column] = imputer.transform(X_val[column])
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=30)
 
-        # Scaling
-        # Make sure to split features into normal and outliers, so StandardScaler is performed on the normal features and RobustScaler
-        # is performed on features with outliers
-                
+    print("Best parameters found:")
+    print(study.best_params)
+    print(f"Best CV log loss: {study.best_value:.4f}")
+    print("Moving to the testing phase...")

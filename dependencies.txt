@@ -4,3 +4,4 @@ dotenv
 typesafe-sdk
 sklearn
 scipy
+optuna
