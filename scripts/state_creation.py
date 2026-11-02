@@ -31,8 +31,6 @@ def create_state(df: pl.DataFrame, df_dict: dict) -> dict:
             # Scalability will come from "role." Specifically, if it's inherently numerical, we can scale it.
         }
 
-    # IDEA: check if data type makes sense. For example: if it's numeric but the dtype is string, get rid of the non-numeric ones and turn it into numeric
-    # If it's categorical, check if there's a numeric value.
-    # Use speculative fan-out
+    # To reduce user input, we can ask Jev to return the identifier and target columns.
 
     return state

@@ -60,7 +60,8 @@ class LRPreprocessing:
     # Scikit-learn requirements. The rest of them will be done during cross-validation
 
     def solver(self, state) -> str:
-        # change the question to pick the top 3 solvers instead
+        # Change the question to pick the top 3 solvers instead
+        # Not used for now
         question = {
             "solver": {
                 "type": "choice",
@@ -144,27 +145,3 @@ def determine_lowest_value(values: set, column: str) -> str:
 
     print(f"The next value in the order is {lowest.choice}")
     return lowest.choice
-
-def impute_column(state: dict) -> str:
-    question = {
-        "imputation": {
-            "type": "choice",
-            "instructions": {
-                "question": "What is the best way to deal with null values in the column of interest?",
-            },
-            "criteria": {
-                "Mean Imputation": "Impute by mean value",
-                "Median Imputation": "Impute by median value",
-                "Constant Imputation": "Impute by a constant, usually zero",
-            }
-        }
-    }
-
-    response = ask_jev(state, question)
-    imputation = response.answers["imputation"]
-
-    if imputation.confidence < 0.7:
-        warnings.warn("The following choice for the imputation method was chosen with low confidence. Double-check if necessary.")
-
-    print(f"The imputation method chosen was {imputation.choice}")
-    return imputation.choice
