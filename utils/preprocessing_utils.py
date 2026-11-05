@@ -5,34 +5,42 @@ from typing import List
 
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
-from statsmodels.discrete.discrete_model import LogitResultsWrapper
+from statsmodels.discrete.discrete_model import LogitResults
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from statsmodels.tools.tools import add_constant
 
-def run_box_tidwell(df: pl.DataFrame, col: str) -> LogitResultsWrapper:
-    col_min = df[col].min()
+def run_box_tidwell(df: pl.DataFrame, col: str, target: str) -> LogitResults:
+    col_min = df[col].cast(pl.Float64).min()
     if col_min <= 0:
-        df[col] += 1 - col_min
+        df = df.with_columns((pl.col(col) + 1 - col_min).alias(col))
 
-    df_box = df[df[col] > 0].copy()
-    df_box['col_ln_col'] = df_box[col] * np.log(df_box[col])
+    df_box = df.filter(pl.col(col) > 0).with_columns(
+        (pl.col(col) * pl.col(col).log()).alias("col_ln_col")
+    )
 
-    box_tidwell_model = smf.logit(f"outcome ~ {col} + col_ln_col", data=df_box).fit()
+    box_tidwell_model = smf.logit(
+        f"{target} ~ {col} + col_ln_col", 
+        data=df_box.to_pandas()
+    ).fit()
 
     return box_tidwell_model
 
 def filter_high_vif(df: pl.DataFrame, features: List[str], threshold: float = 10.0) -> pl.DataFrame:
-    X = df[features].copy()
-    X = add_constant(X)
-
-    vif_data = pl.DataFrame()
-    vif_data["Feature"] = features
-    vif_data["VIF"] = [
-        variance_inflation_factor(X.values, i) 
-        for i in range(1, X.shape[1])
+    X = df.select(features).with_columns(pl.lit(1.0).alias("const"))
+    
+    X_matrix = X.to_numpy()
+    
+    vifs = [
+        variance_inflation_factor(X_matrix, i) 
+        for i in range(len(features))  # Features are indices 0 to len(features)-1; const is last
     ]
-
-    filtered_vif = vif_data[vif_data["VIF"] > threshold].reset_index(drop=True)
+    
+    vif_data = pl.DataFrame({
+        "Feature": features,
+        "VIF": vifs
+    })
+    
+    filtered_vif = vif_data.filter(pl.col("VIF") > threshold)
     
     return filtered_vif
 

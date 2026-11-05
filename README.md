@@ -1,8 +1,9 @@
 # JevPML
 A Jev-based project that automates a model selection + basic preprocessing + ML pipeline. Currently working on Logistic Regression.
-## Commit Notes (11/2)
-* Added pruning and testing phase to logistic regression
+## Commit Notes (11/4)
+* Finishing check_assumptions in logistic regression
+* Finished the entire logistic regression pipeline
+* Did some initial testing with synthetic churn data
 ## To-Do
-* Make Jev return the identifier and target columns
-* Finish check_assumptions function in logistic regression
-* Test the both state creation and logistic regression for synthetic churn datasets
+* Make sure that after encoding, every column that's not in the encoding list is numeric.
+* After doing the numeric check above, continue with testing the multicollinearity assumption

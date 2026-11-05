@@ -3,6 +3,7 @@
 import polars as pl
 import optuna
 import numpy as np
+import warnings
 
 from sklearn.preprocessing import (
     OneHotEncoder,
@@ -50,9 +51,15 @@ from jev_questions.ml_algorithms.logistic_questions import (
     LRPreprocessing
 )
 
+from scripts.ml.column_usefulness import evaluate_columns
+
 def initial_cleaning(state: dict, df: pl.DataFrame) -> pl.DataFrame: # performs initial cleaning on the dataset such as duplicates, messy strings, etc
     # Remove duplicates
     df = df.unique()
+
+    # Get the target variable
+    target = state.get("properties", {}).get("target_variable", "None")
+    assert target in df.columns, f"Target variable {target} is not in the list of columns"
 
     # Go through each column and check if it's categorical. If it is, clean strings
     columns = df.columns
@@ -60,31 +67,72 @@ def initial_cleaning(state: dict, df: pl.DataFrame) -> pl.DataFrame: # performs 
         column_data = state.get("columns", {}).get(column, {})
         assert len(column_data) > 0
 
-        if column_data.get("role", "") in ["categorical ordinal", "categorical non-ordinal"]:
+        if column_data.get("role", "") in ["categorical ordinal", "categorical non-ordinal"] and column != target:
             df = df.with_columns(
                 pl.col(column).str.strip_chars().str.to_titlecase()
             )
 
-def check_assumptions(state: dict, df: pl.DataFrame) -> None: # will stop the entire program if assumptions are not met
-    # Will complete
-    return None
+    return df
+
+def check_assumptions(state: dict, df: pl.DataFrame, encoded_column_list: list) -> pl.DataFrame: # will stop the entire program if assumptions are not met
+    print("Will now check LR assumptions.")
+    if len(encoded_column_list) > 0:
+        warnings.warn("The following columns will be encoded during the CV phase and thus will not be considered in the assumptions phase: " + ", ".join(encoded_column_list))
+        df = df.drop(columns=encoded_column_list, errors="ignore")
+
+    # Check that everything is numeric
+
+    # Get the target variable
+    target = state.get("properties", {}).get("target_variable", "None")
+    assert target in df.columns, f"Target variable {target} is not in the list of columns"
+
+    # Get identifier variable
+    identifier = "None"
+    columns = state["columns"]
+
+    for column in columns:
+        role = columns.get(column, {}).get("role", "None")
+        if role == "identifier":
+            identifier = column
+            break
+
+    assert identifier in df.columns, f"Identifier variable {identifier} is not in the list of columns"
+
+    # Check each assumption
+    assumptions = LRPreprocessing(df, target, identifier, state)
+    assumptions.check_binary()
+    assumptions.independence()
+    # assumptions.linearity_logit() # commented for now, but will need a fix if it's violated
+    assumptions.multicollinearity()
+    assumptions.influential_outliers()
+    assumptions.sample_size()
+
+    # Once passed, we can remove all the useless columns
+
+    df = evaluate_columns(state, df)
+    
+    return df
 
 def assign_encoding(state: dict, df: pl.DataFrame) -> tuple[pl.DataFrame, list]: # should return a list of columns that need to be encoded during CV
     assert "columns" in state, "There is no columns key in your state dictionary."
     columns = state.get("columns")
 
-    needs_encoding = False
-
     column_list = []
 
     for column in columns:
+        needs_encoding = False
+        if columns.get(column, {}).get("role", "None") == "identifier":
+            continue
+
         is_numeric = df.schema[column].is_numeric()
         if not is_numeric:
             is_clean_numeric = (
                 df.select(
-                    pl.col(column).cast(pl.Float64, strict=False).is_not_null()
-                    == pl.col(column).is_not_null()
-                ).all().item() 
+                    (
+                        pl.col(column).cast(pl.Float64, strict=False).is_not_null()
+                        == pl.col(column).is_not_null()
+                    ).all()
+                ).item() 
             )
 
             if is_clean_numeric:
@@ -99,36 +147,43 @@ def assign_encoding(state: dict, df: pl.DataFrame) -> tuple[pl.DataFrame, list]:
             match encoding_method:
                 case "One-Hot Encoding":
                     encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
-                    encoded_matrix = encoder.fit_transform(df[column])
+                    encoded_matrix = encoder.fit_transform(df[[column]])
 
                     encoded_df = pl.DataFrame(
-                        dict(zip(encoder.get_feature_names_out(['City']), encoded_matrix.T))
+                        dict(zip(encoder.get_feature_names_out([column]), encoded_matrix.T))
                     )
 
                     df = df.drop(column).hstack(encoded_df)
                 case "Label Encoding":
-                    df_encoded = df.with_columns(
-                        pl.col(column).cast(pl.Categorical).to_physical().alias("city_encoded")
+                    df = df.with_columns(
+                        pl.col(column).cast(pl.Categorical).to_physical().alias(column)
                     )
                 case "Ordinal Encoding":
                     order = []
                     values = set(df[column].unique())
                     
-                    while len(values) > 1:
+                    while len(values) > 0:
                         lowest = determine_lowest_value(values, column)
                         values.remove(lowest)
                         order.append(lowest)
 
                     ranking = [order]
                     encoder = OrdinalEncoder(categories=ranking)
-                    column_encoded = encoder.fit_transform(df[column])
-                    df[column] = column_encoded
+                    column_encoded = encoder.fit_transform(df[[column]])
+                    encoded_list = column_encoded.tolist()
+                    df = df.with_columns(
+                        pl.Series(name=column, values=encoded_list)
+                    )
                 case "Mean Encoding":
                     column_list.append(column)
 
     return df, column_list
 
-def logistic_regression(df: pl.DataFrame, target: str, state: dict, column_encoding_list: list) -> None:
+def logistic_regression(df: pl.DataFrame, state: dict, column_encoding_list: list) -> None:
+    # Get the target variable
+    target = state.get("properties", {}).get("target_variable", "None")
+    assert target in df.columns, f"Target variable {target} is not in the list of columns"
+
     # Drop rows where target is NaN
     df = df.drop_nans(subset=[target])
 
@@ -429,3 +484,9 @@ def logistic_regression(df: pl.DataFrame, target: str, state: dict, column_encod
     print("Testing phase finished!")
     print(classification_report(y_test, test_preds))
     print(f"ROC-AUC Score: {roc_auc_score(y_test, test_probs):.4f}")
+
+def lr_pipeline(state: dict, df: pl.DataFrame) -> None:
+    df = initial_cleaning(state, df)
+    df, encoded_column_list = assign_encoding(state, df)
+    df = check_assumptions(state, df, encoded_column_list)
+    logistic_regression(df, state, encoded_column_list)

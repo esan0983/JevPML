@@ -27,7 +27,7 @@ def create_state(df: pl.DataFrame, df_dict: dict) -> dict:
         col_dict[col] = {
             "data type": dtype,
             "nulls": str(df[col].null_count()),
-            "role": role(col, dtype, unique),
+            "role": role(col, dtype, unique)
             # Scalability will come from "role." Specifically, if it's inherently numerical, we can scale it.
         }
 

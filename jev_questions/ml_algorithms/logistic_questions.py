@@ -2,7 +2,7 @@ import warnings
 import polars as pl
 
 from scripts import ask_jev
-from utils import (
+from utils.preprocessing_utils import (
     run_box_tidwell,
     filter_high_vif,
     filter_high_cooks_distance
@@ -17,45 +17,46 @@ class LRPreprocessing:
 
     # Assumptions
 
-    def check_binary(self, df, target) -> None:
-        unique = df.n_unique(subset=target)
-        assert unique == 2, f"Target column {target} is not binary and has {unique} unique values."
+    def check_binary(self) -> None:
+        unique = self.df.n_unique(subset=self.target)
+        assert unique == 2, f"Target column {self.target} is not binary and has {self.unique} unique values."
         print("Logistic Regression Assumption 1 (Binary Target Variable) Passed!")
 
-    def independence(self, df, identifier) -> None:
-        if identifier:
-            repeated_values = df.filter(pl.col(identifier).is_duplicated()).select(pl.col(identifier).unique())
+    def independence(self) -> None:
+        if self.identifier:
+            repeated_values = self.df.filter(pl.col(self.identifier).is_duplicated()).select(pl.col(self.identifier).unique())
 
             # Note: it is assumed that row duplicates have been removed.
             assert len(repeated_values) == 0, "Independence of observations was violated for the following identifier values: " + ", ".join(repeated_values)
         print("Logistic Regression Assumption 2 (Independent Observations) Passed!")
 
-    def linearity_logit(self, df, target) -> None:
+    def linearity_logit(self) -> None:
         violated_cols = []
 
-        for col in df.columns:
-            if col == target:
+        for col in self.df.columns:
+            if col == self.target or col == self.identifier:
                 continue
 
-            model = run_box_tidwell(df, col)
-            p_val = model.pvalues['col_ln_col']
+            if self.state.get("columns", {}).get(col, {}).get("role", "") == "numerical":
+                model = run_box_tidwell(self.df.drop([self.identifier]), col, self.target)
+                p_val = model.pvalues['col_ln_col']
 
-            if p_val < 0.05:
-                violated_cols.append(col)
+                if p_val < 0.05:
+                    violated_cols.append(col)
 
         assert len(violated_cols) == 0, "Linearity of logit assumption was violated by the following columns: " + ", ".join(violated_cols)
         print("Logistic Regression Assumption 3 (Linearity of Logit) Passed!")
 
-    def multicollinearity(self, df, target) -> None:
-        filtered_df = filter_high_vif(df, df.drop(columns=[target]))
-        assert filtered_df.is_empty, f"The following columns failed the VIF multicollinearity test: {df.to_string()}"
+    def multicollinearity(self) -> None:
+        filtered_df = filter_high_vif(self.df.drop([self.identifier]), self.df.drop([self.target, self.identifier]))
+        assert filtered_df.is_empty, f"The following columns failed the VIF multicollinearity test: {self.df.to_string()}"
 
-    def influential_outliers(self, df, target) -> None:
-        filtered_df = filter_high_cooks_distance(df, target)
-        assert filtered_df.is_empty, f"The following rows failed the influential outliers test: {df.to_string()}"
+    def influential_outliers(self) -> None:
+        filtered_df = filter_high_cooks_distance(self.df.drop([self.identifier]), self.target)
+        assert filtered_df.is_empty, f"The following rows failed the influential outliers test: {self.df.to_string()}"
 
-    def sample_size(self, df) -> None:
-        assert df.height >= (df.width - 1) * 10, f"The rows to features ratio is less than 10:1. Either add more data or remove some features."
+    def sample_size(self) -> None:
+        assert self.df.height >= (self.df.width - 1) * 10, f"The rows to features ratio is less than 10:1. Either add more data or remove some features."
 
     # Scikit-learn requirements. The rest of them will be done during cross-validation
 
@@ -89,11 +90,13 @@ class LRPreprocessing:
         return choice
 
 def encode_column(df: pl.DataFrame, column: str) -> str:
-    unique_categories = df[column].unique
+    unique_categories = df[column].unique()
+    num_unique = df.n_unique(column)
 
     state = {
-        "column_name": column,
-        "categories": ", ".join(unique_categories.to_list())
+        "column name": column,
+        "number of unique values": str(num_unique),
+        "categories": ", ".join(str(cat) for cat in unique_categories.to_list()) if num_unique < 50 else "over 50 unique values"
     }
 
     question = {
