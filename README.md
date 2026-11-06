@@ -1,9 +1,9 @@
 # JevPML
 A Jev-based project that automates a model selection + basic preprocessing + ML pipeline. Currently working on Logistic Regression.
-## Commit Notes (11/4)
-* Finishing check_assumptions in logistic regression
-* Finished the entire logistic regression pipeline
-* Did some initial testing with synthetic churn data
+## Commit Notes (11/5)
+* Smooth pipeline from state creation to logistic regression succeeded, barring two assumptions checks
 ## To-Do
-* Make sure that after encoding, every column that's not in the encoding list is numeric.
-* After doing the numeric check above, continue with testing the multicollinearity assumption
+* VIF can't work due to the categorical encoding resulting into a divide by zero error
+* Find ways to automatically manipulate datasets if assumptions fail
+* Be more transparent to the user by telling them what was removed, what passes, what fails, etc.
+* Document what happens behind the scenes in the README

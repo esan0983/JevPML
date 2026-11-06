@@ -48,15 +48,17 @@ class LRPreprocessing:
         print("Logistic Regression Assumption 3 (Linearity of Logit) Passed!")
 
     def multicollinearity(self) -> None:
-        filtered_df = filter_high_vif(self.df.drop([self.identifier]), self.df.drop([self.target, self.identifier]))
+        filtered_df = filter_high_vif(self.df.drop([self.identifier]), self.df.drop([self.target, self.identifier]).columns)
         assert filtered_df.is_empty, f"The following columns failed the VIF multicollinearity test: {self.df.to_string()}"
 
     def influential_outliers(self) -> None:
         filtered_df = filter_high_cooks_distance(self.df.drop([self.identifier]), self.target)
         assert filtered_df.is_empty, f"The following rows failed the influential outliers test: {self.df.to_string()}"
+        print("Logistic Regression Assumption 4 (No Influential Outliers) Passed!")
 
     def sample_size(self) -> None:
         assert self.df.height >= (self.df.width - 1) * 10, f"The rows to features ratio is less than 10:1. Either add more data or remove some features."
+        print("Logistic Regression Assumption 5 (Sample Size) Passed!")
 
     # Scikit-learn requirements. The rest of them will be done during cross-validation
 
